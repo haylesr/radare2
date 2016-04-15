@@ -92,7 +92,7 @@ R_API const char *r_reg_get_role(int role) {
 	return NULL;
 }
 
-R_API void r_reg_free_internal(RReg *reg) {
+R_API void r_reg_free_internal(RReg *reg, bool init) {
 	int i;
 
 	R_FREE (reg->reg_profile_str);
@@ -105,8 +105,12 @@ R_API void r_reg_free_internal(RReg *reg) {
 		}
 	}
 	for (i = 0; i < R_REG_TYPE_LAST; i++) {
-		r_list_purge (reg->regset[i].regs);
-		reg->regset[i].regs = r_list_newf ((RListFree)r_reg_item_free);
+		if (init) {
+			r_list_free (reg->regset[i].regs);
+			reg->regset[i].regs = r_list_newf ((RListFree)r_reg_item_free);
+		} else {
+			r_list_free (reg->regset[i].regs);
+		}
 	}
 	reg->size = 0;
 }
@@ -118,10 +122,10 @@ R_API void r_reg_free(RReg *reg) {
 		return;
 
 	for (i = 0; i < R_REG_TYPE_LAST; i++) {
-		r_list_purge (reg->regset[i].pool);
+		r_list_free (reg->regset[i].pool);
 		reg->regset[i].pool = NULL;
 	}
-	r_reg_free_internal (reg);
+	r_reg_free_internal (reg, false);
 	free (reg);
 }
 

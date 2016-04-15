@@ -23,12 +23,8 @@ static ut64 letter_divs[R_CORE_ASMQJMPS_LEN_LETTERS - 1] = {
 static const char *tmp_argv[TMP_ARGV_SZ];
 static bool tmp_argv_heap = false;
 
-static void r_core_free_autocomplete(RCore *core) {
+static void r_line_free_autocomplete(RLine *line) {
 	int i;
-	RLine *line;
-	if (!core || !core->cons || !core->cons->line)
-		return;
-	line = core->cons->line;
 	if (tmp_argv_heap) {
 		int argc = line->completion.argc;
 		for (i = 0; i < argc; i++) {
@@ -41,6 +37,11 @@ static void r_core_free_autocomplete(RCore *core) {
 	line->completion.argv = tmp_argv;
 }
 
+static void r_core_free_autocomplete(RCore *core) {
+	if (!core || !core->cons || !core->cons->line)
+		return;
+	r_line_free_autocomplete (core->cons->line);
+}
 
 static int on_fcn_new(void *_anal, void* _user, RAnalFunction *fcn) {
 	RCore *core = (RCore*)_user;
@@ -207,6 +208,25 @@ static ut64 num_callback(RNum *userptr, const char *str, int *ok) {
 
 	if (ok) *ok = false;
 	switch (*str) {
+	case '.':
+		if (core->num->nc.curr_tok=='+') {
+			ut64 off = core->num->nc.number_value.n;
+			if (!off) off = core->offset;
+			RAnalFunction *fcn = r_anal_get_fcn_at (core->anal, off, 0);
+			if (fcn) {
+				if (ok) *ok = true;
+				ut64 dst = r_anal_fcn_label_get (core->anal, fcn, str + 1);
+				if (dst == UT64_MAX)
+					dst = fcn->addr;
+				st64 delta = dst - off;
+				if (delta < 0) {
+					core->num->nc.curr_tok = '-';
+					delta = off - dst;
+				}
+				return delta;
+			}
+		}
+		break;
 	case '[':
 {
 		ut64 n = 0LL;
@@ -258,6 +278,7 @@ static ut64 num_callback(RNum *userptr, const char *str, int *ok) {
 		// TODO: group analop-dependant vars after a char, so i can filter
 		r_anal_op (core->anal, &op, core->offset,
 			core->block, core->blocksize);
+		r_anal_op_fini (&op); // we dont need strings or pointers, just values, which are not nullified in fini
 		switch (str[1]) {
 		case '.': // can use pc, sp, a0, a1, ...
 			return r_debug_reg_get (core->dbg, str+2);
@@ -307,6 +328,17 @@ static ut64 num_callback(RNum *userptr, const char *str, int *ok) {
 		case 'P': return (core->dbg->pid>0)? core->dbg->pid: 0;
 		case 'f': return op.fail;
 		case 'm': return op.ptr; // memref
+		case 'M': {
+				ut64 lower = UT64_MAX;
+				RListIter *iter;
+				RIOSection *s;
+				r_list_foreach (core->io->sections, iter, s) {
+					if (!s->vaddr && s->offset) continue;
+					if (s->vaddr < lower) lower = s->vaddr;
+				}
+				return (lower == UT64_MAX)? 0LL: lower;
+			}
+			break;
 		case 'v': return op.val; // immediate value
 		case 'l': return op.size;
 		case 'b': return core->blocksize;
@@ -389,6 +421,7 @@ static const char *radare_argv[] = {
 	"#!python", "#!perl", "#!vala",
 	"V",
 	"aa", "ab", "af", "ar", "ag", "at", "a?", "ax", "ad",
+	"aaa", "aac","aae", "aai", "aar", "aan", "aas", "aat", "aap", "aav",
 	"af", "afa", "afan", "afc", "afi", "afb", "afbb", "afn", "afr", "afs", "af*", "afv", "afvn",
 	"aga", "agc", "agd", "agl", "agfl",
 	"e", "et", "e-", "e*", "e!", "e?", "env ",
@@ -704,6 +737,7 @@ openfile:
 		    (!strncmp (line->buffer.data, "ad ", 3)) ||
 		    (!strncmp (line->buffer.data, "bf ", 3)) ||
 		    (!strncmp (line->buffer.data, "ag ", 3)) ||
+		    (!strncmp (line->buffer.data, "aav ", 4)) ||
 		    (!strncmp (line->buffer.data, "afi ", 4)) ||
 		    (!strncmp (line->buffer.data, "afb ", 4)) ||
 		    (!strncmp (line->buffer.data, "afc ", 4)) ||
@@ -804,6 +838,8 @@ R_API int r_core_fgets(char *buf, int len) {
 	const char *ptr;
 	RLine *rli = r_line_singleton ();
 	buf[0] = '\0';
+	if (rli->completion.argv != radare_argv)
+		r_line_free_autocomplete (rli);
 	rli->completion.argc = CMDS;
 	rli->completion.argv = radare_argv;
 	rli->completion.run = autocomplete;
@@ -1203,12 +1239,15 @@ R_API int r_core_init(RCore *core) {
 	/* default noreturn functions */
 	/* osx */
 	r_anal_noreturn_add (core->anal, "sym.imp.__assert_rtn", UT64_MAX);
+	r_anal_noreturn_add (core->anal, "sym.imp.abort", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.imp.exit", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.imp._exit", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.imp.__stack_chk_fail", UT64_MAX);
 	/* linux */
+	r_anal_noreturn_add (core->anal, "sym.imp.__assert_fail", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.__assert_fail", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.abort", UT64_MAX);
+	r_anal_noreturn_add (core->anal, "abort", UT64_MAX);
 	r_anal_noreturn_add (core->anal, "sym.exit", UT64_MAX);
 
 	core->anal->meta_spaces.cb_printf = r_cons_printf;
@@ -1340,6 +1379,9 @@ R_API RCore *r_core_fini(RCore *c) {
 	r_agraph_free (c->graph);
 	R_FREE (c->asmqjmps);
 	sdb_free (c->sdb);
+	r_core_log_free (c->log);
+	r_parse_free (c->parser);
+	free (c->times);
 	return NULL;
 }
 

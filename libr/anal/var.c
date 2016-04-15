@@ -42,9 +42,10 @@ R_API int r_anal_var_add (RAnal *a, ut64 addr, int scope, int delta, char kind, 
 	if (!type) type = "int";
 //eprintf ("VAR ADD 0x%llx  - %d\n", addr, delta);
 	switch (kind) {
-	case 'a':
+	case 'a': // stack-based argument
 	case 'r':
 	case 'v':
+	case 'A': // fastcall based argument
 		break;
 	default:
 		eprintf ("Invalid var kind '%c'\n", kind);
@@ -94,6 +95,7 @@ R_API int r_anal_var_retype (RAnal *a, ut64 addr, int scope, int delta, char kin
 	case 'a':
 	case 'r':
 	case 'v':
+	case 'A':
 		break;
 	default:
 		eprintf ("Invalid var kind '%c'\n", kind);
@@ -368,9 +370,10 @@ R_API int r_anal_var_count(RAnal *a, RAnalFunction *fcn, int kind) {
 
 R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
 	char *varlist;
-	RList *list = r_list_new ();
+	RList *list = NULL;
 	if (!a || !fcn)
-		return list;
+		return NULL;
+	list = r_list_new (); 
 	if (!kind) kind = 'v'; // by default show vars
 	varlist = sdb_get (DB, sdb_fmt (0, "fcn.0x%"PFMT64x".%c",
 		fcn->addr, kind), 0);
@@ -433,24 +436,72 @@ R_API void r_anal_var_list_show(RAnal *anal, RAnalFunction *fcn, int kind, int m
 					var->name, var->type, fcn->addr);
 				break;
 			case 'j':
-				anal->cb_printf ("{\"name\":\"%s\","
-					"\"kind\":\"%s\",\"type\":\"%s\",\"ref\":\"%s%s0x%x\"}",
-					var->name, var->kind=='v'?"var":"arg", var->type,
-					anal->reg->name[R_REG_NAME_BP],
-					(var->kind=='v')?"-":"+", var->delta);
+				switch(var->kind){
+				case 'a':
+					anal->cb_printf ("{\"name\":\"%s\","
+						"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":\"%s+0x%x\"}",
+						var->name, var->type,anal->reg->name[R_REG_NAME_BP],
+						var->delta);
+					break;
+				case 'v':
+					anal->cb_printf ("{\"name\":\"%s\","
+						"\"kind\":\"var\",\"type\":\"%s\",\"ref\":\"%s-0x%x\"}",
+						var->name, var->type,anal->reg->name[R_REG_NAME_BP],
+						var->delta);
+				case 'A':
+					if (var->delta == 0) {
+						anal->cb_printf ("{\"name\":\"%s\","
+							"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":\"ecx\"}",
+							var->name, var->type);
+
+					} else if(var->delta == 1) {
+						anal->cb_printf ("{\"name\":\"%s\","
+							"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":\"edx\"}",
+							var->name, var->type);
+
+					} else {
+						anal->cb_printf ("{\"name\":\"%s\","
+							"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":\"%s+0x%x\"}",
+							var->name, var->type,anal->reg->name[R_REG_NAME_BP],
+							var->delta);
+					}
+					break;
+				}
 				if (iter->n) anal->cb_printf (",");
 				break;
 			default:
-				anal->cb_printf ("%s %s %s @ %s%s0x%x\n",
-					kind=='v'?"var":"arg",
-					var->type, var->name,
-					anal->reg->name[R_REG_NAME_BP],
-					(kind=='v')?"-":"+",
-					var->delta);
+				switch (kind) {
+				case 'a':
+					anal->cb_printf ("arg %s %s @ %s+0x%x\n",
+						var->type, var->name,
+						anal->reg->name[R_REG_NAME_BP],
+						var->delta);
+					break;
+				case 'v':
+					anal->cb_printf ("var %s %s @ %s-0x%x\n",
+						var->type, var->name,
+						anal->reg->name[R_REG_NAME_BP],
+						var->delta);
+					break;
+				case 'A':
+					if (var->delta==0) {
+						anal->cb_printf ("arg %s %s @ ecx\n",
+							var->type, var->name);
+					}else if (var->delta ==1) {
+						anal->cb_printf ("arg %s %s @ edx\n",
+							var->type, var->name);
+					} else {
+						anal->cb_printf ("arg %s %s @ %s+0x%x\n",
+							var->type, var->name,
+							anal->reg->name[R_REG_NAME_BP],
+							var->delta);
+					}
+					break;
+				}
 			}
 		}
 	}
-	if (mode=='j')
+	if (mode == 'j')
 		anal->cb_printf ("]\n");
 	r_list_free (list);
 }

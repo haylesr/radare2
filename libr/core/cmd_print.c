@@ -77,7 +77,7 @@ static void cmd_print_eq_dict(RCore *core, int bsz) {
 	r_cons_printf ("block: %d  0x%x\n", bsz, bsz);
 }
 
-static void set_asm_configs(RCore *core, char *arch, ut32 bits, int segoff){
+R_API void r_core_set_asm_configs(RCore *core, char *arch, ut32 bits, int segoff){
 	r_config_set (core->config, "asm.arch", arch);
 	r_config_set_i (core->config, "asm.bits", bits);
 	// XXX - this needs to be done here, because
@@ -196,11 +196,12 @@ static int process_input(RCore *core, const char *input, ut64* blocksize, char *
 		}
 		result = true;
 	}
+	free (str_clone);
 	return result;
 }
 
 /* This function is not necessary anymore, but it's kept for discussion */
-static int process_input_pade(RCore *core, const char *input, char** hex, char **asm_arch, ut32 *bits) {
+R_API int r_core_process_input_pade(RCore *core, const char *input, char** hex, char **asm_arch, ut32 *bits) {
 	// input: start of the input string e.g. after the command symbols have been consumed
 	// size: hex if present, otherwise -1
 	// asm_arch: asm_arch to interpret as if present and valid, otherwise NULL;
@@ -1457,6 +1458,7 @@ static void disasm_strings(RCore *core, const char *input, RAnalFunction *fcn) {
 			}
 #endif
 		}
+		if (string2) R_FREE(string2);
 		str = strstr (line, "sym.");
 		if (!str) str = strstr (line, "fcn.");
 		if (str) {
@@ -1569,7 +1571,7 @@ static void cmd_print_pv(RCore *core, const char *input) {
 		}
 		/* fallthrough */
 	case ' ':
-		for (i=0;stack[i]; i++) {
+		for (i = 0; stack[i]; i++) {
 			if (!strcmp (input+1, stack[i])) {
 				if (type == 'z') {
 					r_core_cmdf (core, "ps @ [`drn sp`+%d]", n * i);
@@ -1580,10 +1582,14 @@ static void cmd_print_pv(RCore *core, const char *input) {
 		}
 		break;
 	case 'j':
+		{
+		char *str = r_core_cmd_str (core, "ps @ [$$]");
 		r_cons_printf ("{\"value\":%"PFMT64d",\"string\":\"%s\"}\n",
 				r_num_get (core->num, "[$$]"),
-				r_core_cmd_str (core, "ps @ [$$]")
+				str
 			      );
+		free (str);
+		}
 		break;
 	case '?':
 		eprintf ("Usage: pv[z] [ret arg#]\n");
@@ -1610,8 +1616,10 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		char *spc = strchr (input, ' ');
 		if (spc) {
 			nblocks = r_num_get (core->num, spc + 1);
-			if (nblocks < 1)
+			if (nblocks < 1) {
 				nblocks = core->blocksize;
+				return;
+			}
 			spc = strchr (spc + 1, ' ');
 			if (spc) {
 				totalsize = r_num_get (core->num, spc + 1);
@@ -1668,7 +1676,7 @@ static void cmd_print_bars(RCore *core, const char *input) {
 	case 'd':
 		 cmd_print_eq_dict (core, blocksize);
 		 break;
-	case 'e': // entropy
+	case 'e': // "p=e" entropy
 		 {
 			ut8 *p;
 			int i = 0;
@@ -1729,11 +1737,13 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		int i;
 		switch (submode) {
 		case 'j':
-			r_cons_printf ("{\"blocksize\":%d,\"entropy\":[", blocksize);
+			r_cons_printf ("{\"blocksize\":%d,\"address\":%"PFMT64d",\"size\":%"PFMT64d",\"entropy\":[",
+				blocksize, core->offset, totalsize);
 			for (i = 0; i < nblocks; i++) {
 				ut8 ep = ptr[i];
 				ut64 off = blocksize * i;
 				const char *comma = (i+1< (nblocks))?",": "";
+				off += core->offset;
 				r_cons_printf ("{\"addr\":%"PFMT64d",\"value\":%d}%s",
 						off, ep, comma);
 
@@ -1761,7 +1771,6 @@ static int cmd_print(void *data, const char *input) {
 	int ret = 0;
 	ut64 off, from, to, at, ate, piece;
 	ut32 tbs = core->blocksize;
-	ut8 *ptr = core->block;
 	RCoreAnalStats *as;
 	ut64 n;
 	ut64 tmpseek = UT64_MAX;
@@ -1830,10 +1839,10 @@ static int cmd_print(void *data, const char *input) {
 			len = f->size;
 		} else {
 			eprintf ("Cannot find function at 0x%08"PFMT64x"\n", core->offset);
+			core->num->value = 0;
 			goto beach;
 		}
 	}
-	ptr = core->block;
 	core->num->value = len;
 	if (len>core->blocksize)
 		len = core->blocksize;
@@ -2020,7 +2029,7 @@ static int cmd_print(void *data, const char *input) {
 				for (pos = 1; pos < R_BIN_SIZEOF_STRINGS && input[pos]; pos++)
 					if (input[pos] == ' ') break;
 
-			if (!process_input_pade (core, input+pos, &hex, &new_arch, &new_bits)) {
+			if (!r_core_process_input_pade (core, input+pos, &hex, &new_arch, &new_bits)) {
 				// XXX - print help message
 				//return false;
 			}
@@ -2029,7 +2038,7 @@ static int cmd_print(void *data, const char *input) {
 			if (new_bits == -1) new_bits = old_bits;
 
 			if (strcmp (new_arch, old_arch) != 0 || new_bits != old_bits){
-				set_asm_configs (core, new_arch, new_bits, segoff);
+				r_core_set_asm_configs (core, new_arch, new_bits, segoff);
 				settings_changed = true;
 			}
 		}
@@ -2081,7 +2090,7 @@ static int cmd_print(void *data, const char *input) {
 			}
 		}
 		if (settings_changed)
-			set_asm_configs (core, old_arch, old_bits, segoff);
+			r_core_set_asm_configs (core, old_arch, old_bits, segoff);
 		free (old_arch);
 		free (new_arch);
 	}
@@ -2299,7 +2308,7 @@ static int cmd_print(void *data, const char *input) {
 		if (new_bits == -1) new_bits = old_bits;
 
 		if (strcmp (new_arch, old_arch) != 0 || new_bits != old_bits){
-			set_asm_configs (core, new_arch, new_bits, segoff);
+			r_core_set_asm_configs (core, new_arch, new_bits, segoff);
 			settings_changed = true;
 		}
 
@@ -2373,7 +2382,7 @@ static int cmd_print(void *data, const char *input) {
 					}
 				} else {
 					eprintf ("Cannot find function at 0x%08"PFMT64x"\n", core->offset);
-					core->num->value = -1;
+					core->num->value = 0;
 				}
 				pd_result = true;
 			}
@@ -2394,7 +2403,7 @@ static int cmd_print(void *data, const char *input) {
 					}
 				} else {
 					eprintf ("Cannot find function at 0x%08"PFMT64x"\n", core->offset);
-					core->num->value = -1;
+					core->num->value = 0;
 				}
 			}
 			break;
@@ -2410,7 +2419,7 @@ static int cmd_print(void *data, const char *input) {
 			processed_cmd = true;
 			if (input[2] == '?') {
 				r_cons_printf ("Usage: pdf[sj]  - disassemble function (summary+cjmp), json)\n");
-			} else if (input[2] == 's') {
+			} else if (input[2] == 's') { // "pdfs"
 				ut64 oseek = core->offset;
 				int oblock = core->blocksize;
 				RAnalFunction *f = r_anal_get_fcn_in (core->anal, core->offset,
@@ -2451,7 +2460,7 @@ static int cmd_print(void *data, const char *input) {
 				} else {
 					eprintf ("Cannot find function at 0x%08"PFMT64x"\n", core->offset);
 					processed_cmd = true;
-					core->num->value = -1;
+					core->num->value = 0;
 				}
 				if (bsz != core->blocksize)
 					r_core_block_size (core, bsz);
@@ -2579,7 +2588,7 @@ static int cmd_print(void *data, const char *input) {
 		core->offset = current_offset;
 		// change back asm setting is they were changed
 		if (settings_changed)
-			set_asm_configs (core, old_arch, old_bits, segoff);
+			r_core_set_asm_configs (core, old_arch, old_bits, segoff);
 
 		free (old_arch);
 		free (new_arch);
@@ -3445,7 +3454,7 @@ static int cmd_print(void *data, const char *input) {
 		break;
 	default: {
 		 const char* help_msg[] = {
-			 "Usage:", "p[=68abcdDfiImrstuxz] [arg|len]", "",
+			 "Usage:", "p[=68abcdDfiImrstuxz] [arg|len] [@addr]", "",
 			 "p=","[bep?] [blks] [len] [blk]","show entropy/printable chars/chars bars",
 			 "p2"," [len]","8x8 2bpp-tiles",
 			 "p3"," [file]","print stereogram (3D)",

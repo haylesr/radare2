@@ -394,6 +394,20 @@ static const char* get_compile_time(Sdb *binFileSdb) {
 	return timeDateStamp_string;
 }
 
+static int is_executable (RBinObject *obj) {
+	RListIter *it;
+	RBinSection* sec;
+	if (obj) {
+		if (obj->info && obj->info->arch)
+			return true;
+		r_list_foreach (obj->sections, it, sec) {
+			if (R_BIN_SCN_EXECUTABLE & sec->srwx)
+				return true;
+		}
+	}
+	return false;
+}
+
 static int bin_info(RCore *r, int mode) {
 	int i, j, v;
 	char str[R_FLAG_NAME_SIZE];
@@ -401,13 +415,15 @@ static int bin_info(RCore *r, int mode) {
 	char baddr_str[32];
 	RBinInfo *info = r_bin_get_info (r->bin);
 	RBinFile *binfile = r_core_bin_cur (r);
+	RBinObject *obj = r_bin_cur_object (r->bin);
 	const char *compiled = NULL;
+	bool havecode;
 
-	if (!binfile || !info) {
+	if (!binfile || !info || !obj) {
 		if (mode & R_CORE_BIN_JSON) r_cons_printf ("{}");
 		return false;
 	}
-
+	havecode = is_executable (obj) | (obj->entries != NULL);
 	compiled = get_compile_time (binfile->sdb);
 	snprintf (size_str, sizeof (size_str),
 		"%"PFMT64d,  r_bin_get_size (r->bin));
@@ -475,6 +491,7 @@ static int bin_info(RCore *r, int mode) {
 	} else {
 		// XXX: if type is 'fs' show something different?
 		if (IS_MODE_JSON (mode)) r_cons_printf ("{");
+		pair_bool ("havecode", havecode, mode, false);
 		pair_bool ("pic", info->has_pi, mode, false);
 		pair_bool ("canary", info->has_canary, mode, false);
 		pair_bool ("nx", info->has_nx, mode, false);
@@ -504,15 +521,14 @@ static int bin_info(RCore *r, int mode) {
 		pair_str ("rpath", info->rpath, mode, false);
 		pair_str ("binsz", size_str, mode, false);
 		pair_str ("compiled", compiled, mode, false);
-		pair_str ("guid", info->guid, mode, false);
-		pair_str ("dbg_file", info->debug_file_name, mode, true);
+		pair_str ("dbg_file", info->debug_file_name, mode, false);
 		if (info->claimed_checksum) {
 			/* checksum specified in header */
-			pair_str ("hdr_cksum", info->claimed_checksum, mode, true);
+			pair_str ("hdr.csum", info->claimed_checksum, mode, false);
 		}
 		if (info->actual_checksum) {
 			/* computed checksum */
-			pair_str ("cmp_cksum", info->actual_checksum, mode, true);
+			pair_str ("cmp.csum", info->actual_checksum, mode, false);
 		}
 
 		// checksums are only supported for pe atm
@@ -538,6 +554,7 @@ static int bin_info(RCore *r, int mode) {
 			}
 			r_cons_newline ();
 		}
+		pair_str ("guid", info->guid, mode, true);
 		if (IS_MODE_JSON (mode)) r_cons_printf ("}");
 	}
 	return true;
@@ -862,6 +879,7 @@ static void set_bin_relocs (RCore *r, RBinReloc *reloc, ut64 addr, Sdb **db, cha
 		char *reloc_name = get_reloc_name (reloc, addr);
 		if (reloc_name) {
 			r_flag_set (r->flags, reloc_name, addr, bin_reloc_size (reloc));
+			free (reloc_name);
 		}
 	}
 }
@@ -869,14 +887,19 @@ static void set_bin_relocs (RCore *r, RBinReloc *reloc, ut64 addr, Sdb **db, cha
 static int bin_relocs(RCore *r, int mode, int va) {
 	RList *relocs;
 	RListIter *iter;
-	RBinReloc *reloc;
+	RBinReloc *reloc = NULL;
 	Sdb *db = NULL;
 	char *sdb_module = NULL;
 	int i = 0;
 
 	va = VA_TRUE; // XXX relocs always vaddr?
-
-	if ((relocs = r_bin_get_relocs (r->bin)) == NULL) return false;
+	//this has been created for reloc object files
+	relocs = r_bin_patch_relocs (r->bin);
+	if (!relocs) {
+		relocs = r_bin_get_relocs (r->bin);
+		if (!relocs)
+			return false;
+	}
 
 	if (IS_MODE_RAD (mode)) r_cons_printf ("fs relocs\n");
 	if (IS_MODE_NORMAL (mode)) r_cons_printf ("[Relocations]\n");
@@ -887,8 +910,7 @@ static int bin_relocs(RCore *r, int mode, int va) {
 		if (IS_MODE_SET (mode)) {
 			set_bin_relocs (r, reloc, addr, &db, &sdb_module);
 		} else if (IS_MODE_SIMPLE (mode)) {
-			r_cons_printf ("0x%08"PFMT64x"  %s\n", addr,
-				reloc->import ? reloc->import->name : "");
+			r_cons_printf ("0x%08"PFMT64x"  %s\n", addr, reloc->import ? reloc->import->name : "");
 		} else if (IS_MODE_RAD (mode)) {
 			char *reloc_name = get_reloc_name (reloc, addr);
 			if (reloc_name) {
@@ -918,6 +940,8 @@ static int bin_relocs(RCore *r, int mode, int va) {
 				addr, reloc->paddr, bin_reloc_type_name (reloc));
 			if (reloc->import && reloc->import->name[0]) {
 				r_cons_printf (" %s", reloc->import->name);
+			} else if (reloc->symbol && reloc->symbol->name[0]) {
+				r_cons_printf (" %s", reloc->symbol->name);
 			}
 			if (reloc->addend) {
 				if (reloc->import && reloc->addend > 0) {
@@ -1279,12 +1303,14 @@ static int bin_symbols_internal(RCore *r, int mode, ut64 laddr, int va, ut64 at,
 				"\"demname\":\"%s\","
 				"\"flagname\":\"%s\","
 				"\"size\":%d,"
+				"\"type\":\"%s\","
 				"\"vaddr\":%"PFMT64d","
 				"\"paddr\":%"PFMT64d"}",
 				iter->p?",":"", str,
 				sn.demname? sn.demname: "",
 				sn.nameflag,
 				(int)symbol->size,
+				symbol->type,
 				(ut64)addr, (ut64)symbol->paddr);
 			free (str);
 		} else if (IS_MODE_SIMPLE (mode)) {
@@ -1531,8 +1557,7 @@ static int bin_sections(RCore *r, int mode, ut64 laddr, int va, ut64 at, const c
 			}
 			r_meta_add (r->anal, R_META_TYPE_COMMENT, addr, addr, str);
 			if (section->add)
-				r_io_section_add (r->io, section->paddr, addr, section->size,
-					section->vsize, section->srwx, section->name, 0, fd);
+				r_io_section_add (r->io, section->paddr, addr, section->size, section->vsize, section->srwx, section->name, 0, fd);
 		} else if (IS_MODE_SIMPLE (mode)) {
 			char *hashstr = NULL;
 			if (chksum) {
@@ -1673,12 +1698,16 @@ static int bin_fields(RCore *r, int mode, int va) {
 	if (IS_MODE_JSON (mode)) r_cons_printf ("[");
 	else if (IS_MODE_RAD (mode)) r_cons_printf ("fs header\n");
 	else if (IS_MODE_NORMAL (mode)) r_cons_printf ("[Header fields]\n");
+//why this? there is an overlap in bin_sections with ehdr 
+//because there can't be two sections with the same name
+#if 0
 	else if (IS_MODE_SET (mode)) {
 		// XXX: Need more flags??
 		// this will be set even if the binary does not have an ehdr
 		int fd = r_core_file_cur_fd(r);
 		r_io_section_add (r->io, 0, baddr, size, size, 7, "ehdr", 0, fd);
 	}
+#endif
 	r_list_foreach (fields, iter, field) {
 		ut64 addr = rva (bin, field->paddr, field->vaddr, va);
 
@@ -1759,14 +1788,19 @@ static int bin_classes(RCore *r, int mode) {
 			}
 		} else if (IS_MODE_JSON (mode)) {
 			if (c->super) {
-				r_cons_printf ("%s{\"name\":\"%s\",\"addr\":%"PFMT64d",\"index\":%"PFMT64d",\"super\":\"%s\"}",
+				r_cons_printf ("%s{\"classname\":\"%s\",\"addr\":%"PFMT64d",\"index\":%"PFMT64d",\"super\":\"%s\",\"methods\":[",
 					iter->p ? "," : "", c->name, c->addr,
 					c->index, c->super);
 			} else {
-				r_cons_printf ("%s{\"name\":\"%s\",\"addr\":%"PFMT64d",\"index\":%"PFMT64d"}",
+				r_cons_printf ("%s{\"classname\":\"%s\",\"addr\":%"PFMT64d",\"index\":%"PFMT64d",\"methods\":[",
 					iter->p ? "," : "", c->name, c->addr,
 					c->index);
 			}
+			r_list_foreach (c->methods, iter2, sym) {
+				r_cons_printf ("%s{\"name\":\"%s\",\"addr\":%"PFMT64d"}",
+					iter2->p? ",": "", sym->name, sym->vaddr);
+			}
+			r_cons_printf ("]}");
 		} else {
 			int m = 0;
 			r_cons_printf ("0x%08"PFMT64x" class %d %s",
@@ -1837,19 +1871,33 @@ static int bin_libs(RCore *r, int mode) {
 	return true;
 }
 
-static void bin_mem_print(RList *mems, int perms, int depth) {
+static void bin_mem_print(RList *mems, int perms, int depth, int mode) {
 	RBinMem *mem;
 	RListIter *iter;
 
 	if (!mems) return;
 
 	r_list_foreach (mems, iter, mem) {
-		if (mem) {
+		if (IS_MODE_JSON (mode)) {
+			r_cons_printf ("{\"name\":\"%s\",\"size\":%d,\"address\":%d,"
+					"\"flags\":\"%s\"}", mem->name, mem->size,
+					mem->addr, r_str_rwx_i (mem->perms & perms));
+		} else if (IS_MODE_SIMPLE (mode)) {
+			r_cons_printf ("0x%08"PFMT64x"\n", mem->addr);
+		} else {
 			r_cons_printf ("0x%08"PFMT64x" +0x%04x %s %*s%-*s\n",
-				mem->addr, mem->size, r_str_rwx_i (mem->perms & perms),
-				depth, "", 20-depth, mem->name);
-			if (mem->mirrors) {
-				bin_mem_print (mem->mirrors, mem->perms & perms, depth + 1);
+					mem->addr, mem->size, r_str_rwx_i (mem->perms & perms),
+					depth, "", 20-depth, mem->name);
+		}
+		if (mem->mirrors) {
+			if (IS_MODE_JSON (mode)) {
+				r_cons_printf (",");
+			}
+			bin_mem_print (mem->mirrors, mem->perms & perms, depth + 1, mode);
+		}
+		if (IS_MODE_JSON(mode)) {
+			if (iter->n) {
+				r_cons_printf (",");
 			}
 		}
 	}
@@ -1858,18 +1906,21 @@ static void bin_mem_print(RList *mems, int perms, int depth) {
 static int bin_mem(RCore *r, int mode) {
 	RList *mem = NULL;
 	if (!r)	return false;
-	if (!(IS_MODE_RAD (mode) || IS_MODE_SET (mode))) {
-		r_cons_printf ("[Memory]\n\n");
+	if (!IS_MODE_JSON(mode)) {
+		if (!(IS_MODE_RAD (mode) || IS_MODE_SET (mode))) {
+			r_cons_printf ("[Memory]\n\n");
+		}
 	}
 	if (!(mem = r_bin_get_mem (r->bin))) {
 		return false;
 	}
 	if (IS_MODE_JSON (mode)) {
-		r_cons_printf ("TODO\n");
-		return false;
-	}
-	if (!(IS_MODE_RAD (mode) || IS_MODE_SET (mode))) {
-		bin_mem_print (mem, 7, 0);
+		r_cons_printf ("[");
+		bin_mem_print (mem, 7, 0, R_CORE_BIN_JSON);
+		r_cons_printf ("]\n");
+		return true;
+	} else if (!(IS_MODE_RAD (mode) || IS_MODE_SET (mode))) {
+		bin_mem_print (mem, 7, 0, mode);
 	}
 	return true;
 }
@@ -1985,7 +2036,7 @@ static void bin_elf_versioninfo(RCore *r) {
 			snprintf (path_entry, sizeof (path_entry), "%s/entry%d", path, num_entry++);
 			if (!(sdb = sdb_ns_path (r->sdb, path_entry, 0)))
 				break;
-			
+
 			r_cons_printf ("  %03x: ", sdb_num_get (sdb, "idx", 0));
 			const char *value = NULL;
 
@@ -2092,6 +2143,8 @@ R_API int r_core_bin_info(RCore *core, int action, int mode, int va, RCoreBinFil
 		ret &= bin_pdb (core, mode);
 	if ((action & R_CORE_BIN_ACC_ENTRIES))
 		ret &= bin_entry (core, mode, loadaddr, va);
+	if ((action & R_CORE_BIN_ACC_SECTIONS))
+		ret &= bin_sections (core, mode, loadaddr, va, at, name, chksum);
 	if ((action & R_CORE_BIN_ACC_RELOCS))
 		ret &= bin_relocs (core, mode, va);
 	if ((action & R_CORE_BIN_ACC_IMPORTS))
@@ -2100,8 +2153,6 @@ R_API int r_core_bin_info(RCore *core, int action, int mode, int va, RCoreBinFil
 		ret &= bin_exports (core, mode, loadaddr, va, at, name);
 	if ((action & R_CORE_BIN_ACC_SYMBOLS))
 		ret &= bin_symbols (core, mode, loadaddr, va, at, name);
-	if ((action & R_CORE_BIN_ACC_SECTIONS))
-		ret &= bin_sections (core, mode, loadaddr, va, at, name, chksum);
 	if ((action & R_CORE_BIN_ACC_FIELDS))
 		ret &= bin_fields (core, mode, va);
 	if ((action & R_CORE_BIN_ACC_LIBS))

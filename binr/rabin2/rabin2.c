@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2015 - nibble, pancake */
+/* radare - LGPL - Copyright 2009-2016 - nibble, pancake */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -355,7 +355,18 @@ static int rabin_do_operation(const char *op) {
 		case 'S':
 			if (!ptr2)
 				goto _rabin_do_operation_error;
-			else if (!rabin_dump_sections (ptr2))
+			if (!rabin_dump_sections (ptr2))
+				goto error;
+			break;
+		default:
+			goto _rabin_do_operation_error;
+		}
+		break;
+	case 'a':
+		if (!ptr) goto _rabin_do_operation_error;
+		switch (*ptr) {
+		case 'l':
+			if (!ptr2 || !r_bin_wr_addlib (bin, ptr2))
 				goto error;
 			break;
 		default:
@@ -446,6 +457,7 @@ int main(int argc, char **argv) {
 	const char *forcebin = NULL;
 	const char *chksum = NULL;
 	const char *op = NULL;
+	const char *path = NULL;
 	RCoreBinFilter filter;
 	RCoreFile *cf = NULL;
 	int xtr_idx = 0; // load all files if extraction is necessary.
@@ -457,16 +469,28 @@ int main(int argc, char **argv) {
 	bin = core.bin;
 
 	if (!(tmp = r_sys_getenv ("RABIN2_NOPLUGINS"))) {
-		tmp = r_str_home (R2_HOMEDIR"/plugins");
 		l = r_lib_new ("radare_plugin");
 		r_lib_add_handler (l, R_LIB_TYPE_BIN, "bin plugins",
 				   &__lib_bin_cb, &__lib_bin_dt, NULL);
 		r_lib_add_handler (l, R_LIB_TYPE_BIN_XTR, "bin xtr plugins",
 				   &__lib_bin_xtr_cb, &__lib_bin_xtr_dt, NULL);
 		/* load plugins everywhere */
-		r_lib_opendir (l, getenv ("LIBR_PLUGINS"));
-		r_lib_opendir (l, tmp);
-		r_lib_opendir (l, R2_LIBDIR"/radare2/"R2_VERSION);
+		
+		path = r_sys_getenv (R_LIB_ENV);
+		if (path && *path)
+			r_lib_opendir (l, path);
+		
+		if (1) {
+			char *homeplugindir = r_str_home (R2_HOMEDIR "/plugins");
+			// eprintf ("OPENDIR (%s)\n", homeplugindir);
+			r_lib_opendir (l, homeplugindir);
+			free (homeplugindir);
+		}
+		if (1) { //where & R_CORE_LOADLIBS_SYSTEM) {
+			r_lib_opendir (l, R2_LIBDIR "/radare2/" R2_VERSION);
+			r_lib_opendir (l, R2_LIBDIR "/radare2-extras/" R2_VERSION);
+			r_lib_opendir (l, R2_LIBDIR "/radare2-bindings/" R2_VERSION);
+		}
 	}
 	free (tmp);
 
@@ -581,11 +605,12 @@ int main(int argc, char **argv) {
 			if (isBinopHelp (op)) {
 				printf ("Operation string:\n"
 					"  Change Entrypoint: e/0x8048000\n"
-					"  Dump symbols: d/s/1024\n"
-					"  Dump section: d/S/.text\n"
-					"  Resize section: r/.data/1024\n"
+					"  Dump Symbols: d/s/1024\n"
+					"  Dump Section: d/S/.text\n"
+					"  Resize Section: r/.data/1024\n"
 					"  Remove RPATH: R\n"
-					"  Change permissions: p/.data/rwx\n");
+					"  Add Library: a/l/libfoo.dylib\n"
+					"  Change Permissions: p/.data/rwx\n");
 				r_core_fini (&core);
 				return 0;
 			}
@@ -930,12 +955,20 @@ int main(int argc, char **argv) {
 	if (action & ACTION_EXTRACT) {
 		RListIter *iter;
 		RBinXtrPlugin *xtr;
+		bool supported = false;
+
 		r_list_foreach (bin->binxtrs, iter, xtr) {
 			if (xtr->check (bin)) {
 				// xtr->extractall (bin);
 				rabin_extract ((!arch && !arch_name && !bits));
+				supported = true;
 				break;
 			}
+		}
+
+		if (!supported) {
+			// if we reach here, no supported xtr plugins found
+			eprintf ("Cannot extract bins from '%s'. No supported plugins found!\n", bin->file);
 		}
 	}
 	if (op && action & ACTION_OPERATION)

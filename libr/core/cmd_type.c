@@ -13,18 +13,42 @@ static void show_help(RCore *core) {
 		"te", "", "List all loaded enums",
 		"te", " <enum> <value>", "Show name for given enum number",
 		"td", " <string>", "Load types from string",
-		"tf", "", "List all loaded functions signitures",
+		"tf", "", "List all loaded functions signatures",
 		"tk", " <sdb-query>", "Perform sdb query",
 		"tl", "[?]", "Show/Link type to an address",
 		//"to",  "",         "List opened files",
 		"to", " -", "Open cfg.editor to load types",
 		"to", " <path>", "Load types from C header file",
+		"tp", " <type> <address>", "cast data at <adress> to <type> and print it",
 		"ts", "", "print loaded struct types",
 		"tu", "", "print loaded union types",
 		//"| ts k=v k=v @ link.addr set fields at given linked type\n"
 		NULL };
 	r_core_cmd_help (core, help_message);
 }
+
+static void save_parsed_type(RCore *core, char *parsed) {
+	char *type, *name;
+	if (!core || !core->anal || !parsed) {
+		goto beach;
+	}
+	// First, if this exists, let's remove it.
+	type = strdup (parsed);
+	if (!type) {
+		goto beach;
+	}
+	name = strtok (type, "=");
+	if (!name || strchr (name, '\n') != NULL
+			|| strchr (name, ';') != NULL) {
+		goto beach;
+	}
+	r_core_cmdf (core, "\"t- %s\"", name);
+	// Now add the type to sdb.
+	sdb_query_lines (core->anal->sdb_types, parsed);
+beach:
+	free (type);
+}
+
 //TODO
 //look at the next couple of functions
 //can be optimized into one right ... you see it you do it :P
@@ -51,6 +75,17 @@ static int stdprintifunion(void *p, const char *k, const char *v) {
 static int sdbdelete(void *p, const char *k, const char *v) {
 	RCore *core = (RCore *)p;
 	r_anal_type_del (core->anal, k);
+	return 1;
+}
+static int sdbdeletelink(void *p, const char *k, const char *v) {
+	RCore *core = (RCore *)p;
+	if (!strncmp (k, "link.", strlen ("link.")))
+		r_anal_type_del (core->anal, k);
+	return 1;
+}
+static int linklist(void *p, const char *k, const char *v) {
+	if (!strncmp (k, "link.", strlen ("link.")))
+		r_cons_printf ("tl %s @ 0x%s\n", v, k + strlen ("link."));
 	return 1;
 }
 static int typelist(void *p, const char *k, const char *v) {
@@ -105,7 +140,7 @@ static int cmd_type(void *data, const char *input) {
 
 	switch (input[0]) {
 	// t [typename] - show given type in C syntax
-	case 'u':
+	case 'u': // "tu"
 		switch (input[1]) {
 		case '?': {
 			const char *help_message[] = {
@@ -114,18 +149,19 @@ static int cmd_type(void *data, const char *input) {
 				"tu?", "", "show this help",
 				NULL };
 			r_core_cmd_help (core, help_message);
-			} break;
+		} break;
 		case 0:
 			sdb_foreach (core->anal->sdb_types, stdprintifunion, core);
 			break;
 		}
 		break;
-	case 'k':
+	case 'k': // "tk"
 		if (input[1] == ' ') {
 			sdb_query (core->anal->sdb_types, input + 2);
 		} else sdb_query (core->anal->sdb_types, "*");
+		fflush (stdout);
 		break;
-	case 's':
+	case 's': // "ts"
 		switch (input[1]) {
 		case '?': {
 			const char *help_message[] = {
@@ -138,7 +174,8 @@ static int cmd_type(void *data, const char *input) {
 		case 0:
 			sdb_foreach (core->anal->sdb_types, stdprintifstruct, core);
 			break;
-		}break;
+		}
+		break;
 	case 'b': {
 		char *p, *s = (strlen (input) > 1)? strdup (input + 2): NULL;
 		const char *isenum;
@@ -247,7 +284,7 @@ static int cmd_type(void *data, const char *input) {
 						out = r_parse_c_string (tmp);
 						if (out) {
 							//		r_cons_strcat (out);
-							sdb_query_lines (core->anal->sdb_types, out);
+							save_parsed_type (core, out);
 							free (out);
 						}
 						free (tmp);
@@ -256,7 +293,7 @@ static int cmd_type(void *data, const char *input) {
 					char *out = r_parse_c_file (filename);
 					if (out) {
 						//r_cons_strcat (out);
-						sdb_query_lines (core->anal->sdb_types, out);
+						save_parsed_type (core, out);
 						free (out);
 					}
 					//r_anal_type_loadfile (core->anal, filename);
@@ -287,7 +324,7 @@ static int cmd_type(void *data, const char *input) {
 			char *out = r_parse_c_string (tmp);
 			if (out) {
 				//r_cons_strcat (out);
-				sdb_query_lines (core->anal->sdb_types, out);
+				save_parsed_type (core, out);
 				free (out);
 			}
 		} else {
@@ -296,22 +333,63 @@ static int cmd_type(void *data, const char *input) {
 		break;
 	// tl - link a type to an address
 	case 'l':
-		if (input[1] == '?') {
+		switch (input[1]) {
+		case '?': {
 			const char *help_message[] = {
-				"Usage: tl", " [typename|addr] ([addr])@[addr|function]", "",
+				"Usage:", "", "",
+				"tl", "<typename>", "link a type to current adress.",
+				"tl", "<typename> <address>", "link type to given address.",
+				"tl-*", "", "delete all links.",
+				"tl-", "<address>", "delete link at given address.",
+				"tl*", "", "list all links in radare2 command format",
+				"tl?", "", "print this help.",
 				NULL };
-
 			r_core_cmd_help (core, help_message);
-		} else if (input[1]) {
-			ut64 addr = r_num_math (core->num, input + 2);
-			char *ptr = strchr (input + 2, ' ');
+			} break;
+		case ' ': {
+			const char *type = input + 2;
+			char *ptr = strchr (type, ' ');
+			ut64 addr;
 			if (ptr) {
-				addr = r_num_math (core->num, ptr + 1);
-				*ptr = '\0';
+				*ptr++ = 0;
+				addr = r_num_math (core->num, ptr);
 			} else addr = core->offset;
-			r_anal_type_link (core->anal, input + 2, addr);
+			r_anal_type_link (core->anal, type, addr);
+			}
+			break;
+		case '-':
+			switch (input[2]) {
+			case '*':
+				sdb_foreach (core->anal->sdb_types, sdbdeletelink, core);
+				break;
+			case ' ': {
+				const char *ptr = input + 3;
+				ut64 addr = r_num_math (core->num, ptr);
+				r_anal_type_unlink (core->anal, addr);
+				}
+				break;
+			}
+			break;
+		case '*':
+			sdb_foreach (core->anal->sdb_types, linklist, core);
+			break;
+		}
+		break;
+	case 'p': {
+		const char *type = input + 2;
+		char *ptr = strchr (type, ' ');
+		if (ptr) {
+			*ptr++ = 0;
+			ut64 addr = r_num_math (core->num, ptr);
+			char *fmt = r_anal_type_format (core->anal, type);
+			if (fmt) {
+				r_core_cmdf (core, "pf %s @ 0x%08" PFMT64x "\n", fmt, addr);
+				free (fmt);
+			} else eprintf ("Cannot find '%s' type\n", input + 1);
 		} else {
-			r_core_cmd0 (core, "t~^link");
+			eprintf ("see t?\n");
+			break;
+		}
 		}
 		break;
 	case '-':
@@ -331,7 +409,7 @@ static int cmd_type(void *data, const char *input) {
 				const char *type = sdb_const_get (core->anal->sdb_types, name, 0);
 				if (!type)
 					break;
-				int tmp_len = strlen (name)+strlen (type);
+				int tmp_len = strlen (name) + strlen (type);
 				char *tmp = malloc (tmp_len + 1);
 				r_anal_type_del (core->anal, name);
 				if (tmp) {

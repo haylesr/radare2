@@ -48,6 +48,22 @@ static char *filter_flags(RCore *core, const char *msg) {
 	return buf;
 }
 
+static void clippy(const char *msg) {
+	int msglen = strlen (msg);
+	char *l = strdup (r_str_pad ('-', msglen));
+	char *s = strdup (r_str_pad (' ', msglen));
+	r_cons_printf (
+" .--.     .-%s-.\n"
+" | _|     | %s |\n"
+" | O O   <  %s |\n"
+" |  |  |  | %s |\n"
+" || | /   `-%s-'\n"
+" |`-'|\n"
+" `---'\n", l, s, msg, s, l);
+	free (l);
+	free (s);
+}
+
 static int cmd_help(void *data, const char *input) {
 	RCore *core = (RCore *)data;
 	const char *k;
@@ -301,10 +317,10 @@ static int cmd_help(void *data, const char *input) {
 			if (n<0) r_core_cmd (core, input+1, 0);
 		} else r_cons_printf ("0x%"PFMT64x"\n", core->num->value);
 		break;
-	case '!': // ??
+	case '!': // "?!"
 		if (input[1]) {
 			if (!core->num->value)
-				r_core_cmd (core, input+1, 0);
+				return core->num->value = r_core_cmd (core, input+1, 0);
 		} else r_cons_printf ("0x%"PFMT64x"\n", core->num->value);
 		break;
 	case '@':
@@ -370,6 +386,7 @@ static int cmd_help(void *data, const char *input) {
 			"$Xn", "", "get nth xref of function",
 			"$l", "", "opcode length",
 			"$m", "", "opcode memory reference (e.g. mov eax,[0x10] => 0x10)",
+			"$M", "", "address where the binary is mapped (base address)",
 			"$o", "", "here (current disk io offset)",
 			"$p", "", "getpid()",
 			"$P", "", "pid of children (only in debug)",
@@ -425,6 +442,9 @@ static int cmd_help(void *data, const char *input) {
 				r_cons_printf ("%02x", input[i]);
 			r_cons_newline ();
 		}
+		break;
+	case 'E': // clippy echo
+		clippy (r_str_chop_ro (input+1));
 		break;
 	case 'e': // echo
 		{
@@ -489,13 +509,13 @@ static int cmd_help(void *data, const char *input) {
 	case '_': // hud input
 		r_core_yank_hud_file (core, input+1);
 		break;
-	case 'i': // input num
+	case 'i': // "?i" input num
 		r_cons_set_raw(0);
 		if (!r_config_get_i (core->config, "scr.interactive")) {
 			eprintf ("Not running in interactive mode\n");
 		} else
 		switch (input[1]) {
-		case 'f':
+		case 'f': // "?if"
 			core->num->value = !r_num_conditional (core->num, input+2);
 			eprintf ("%s\n", r_str_bool (!core->num->value));
 			break;
@@ -505,15 +525,15 @@ static int cmd_help(void *data, const char *input) {
 		case 'p': {
 			core->num->value = r_core_yank_hud_path (core, input+2, 0) == true;
 			} break;
-		case 'k':
+		case 'k': // "?ik"
 			r_cons_any_key (NULL);
 			break;
-		case 'y':
+		case 'y': // "?iy"
 			for (input+=2; *input==' '; input++);
 			core->num->value =
 			r_cons_yesno (1, "%s? (Y/n)", input);
 			break;
-		case 'n':
+		case 'n': // "?in"
 			for (input+=2; *input==' '; input++);
 			core->num->value =
 			r_cons_yesno (0, "%s? (y/N)", input);
@@ -546,7 +566,7 @@ static int cmd_help(void *data, const char *input) {
 	case '?': // ???
 		if (input[1]=='?') {
 			if (input[2]=='?') {
-				r_cons_printf ("What are you doing?\n");
+				clippy ("What are you doing?");
 				return 0;
 			}
 			if (input[2]) {
@@ -598,7 +618,7 @@ static int cmd_help(void *data, const char *input) {
 			return 0;
 		} else if (input[1]) {
 			if (core->num->value) {
-				r_core_cmd (core, input+1, 0);
+				core->num->value = r_core_cmd (core, input+1, 0);
 			}
 		} else {
 			if (core->num->dbz) {

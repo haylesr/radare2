@@ -210,7 +210,7 @@ R_IPI m68k_word *M68k_Disassemble(struct DisasmPara_68k *dp)
 {
   ut16 opc;
   dis_func_t *func;
-  dis_buffer_t dbuf;
+  dis_buffer_t dbuf = {0};
   char *s;
 
   if (dp->opcode==NULL || dp->operands==NULL)
@@ -913,22 +913,19 @@ static void opcode_branch(dis_buffer_t *dbuf, ut16 opc)
       make_cond(dbuf,11,"b");
 
   addchar('.');
-  disp = BITFIELD(opc,7,0);
+  disp = (st8)BITFIELD(opc,7,0);
   if (disp == 0) {
     /* 16-bit signed displacement */
-    disp = read16(dbuf->val + 1);
+    disp = (st16)read16(dbuf->val + 1);
     dbuf->used++;
     addchar('w');
-  } else if (disp == 0xff) {
+  } else if (disp == -1) {
     /* 32-bit signed displacement */
-    disp = read32(dbuf->val + 1);
+    disp = (st32)read32(dbuf->val + 1);
     dbuf->used += 2;
     addchar('l');
   } else {
-    /* 8-bit signed displacement in opcode. */
-    /* Needs to be sign-extended... */
-    if (ISBITSET(disp,7))
-      disp -= 256;
+    /* 8-bit signed displacement */
     addchar('b');
   }
   addchar('\t');
@@ -2444,7 +2441,7 @@ static void get_modregstr_moto(dis_buffer_t *dbuf, int bit, int mod, int sz, int
   ut8 scale, idx;
   const short *nval;
   ut16 ext;
-  int disp, odisp, bd, od, reg;
+  int disp = 0, odisp = 0, bd = 0, od = 0, reg = 0;
   
   odisp = 0;
 
@@ -2557,7 +2554,9 @@ static void get_modregstr_moto(dis_buffer_t *dbuf, int bit, int mod, int sz, int
         disp = *nval++;
       } else {
         dbuf->used += 2;
-        disp = *(long *)nval;
+        if (sz >= sizeof(long)) {
+          disp = *(long *)nval;
+        }
         nval += 2;
       }
 
@@ -2568,7 +2567,9 @@ static void get_modregstr_moto(dis_buffer_t *dbuf, int bit, int mod, int sz, int
         odisp = *nval++;
       } else if (od == 3) {
         dbuf->used += 2;
-        odisp = *(long *)nval;
+        if (sz >= sizeof(long)) {
+	  odisp = *(long *)nval;
+        }
         nval += 2;
       }
     } else {

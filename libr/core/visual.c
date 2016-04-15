@@ -585,19 +585,27 @@ static ut64 prevop_addr (RCore *core, ut64 addr) {
 	RAnalBlock *bb;
 	RAnalOp op;
 	int len, ret, i;
+	int minop = r_anal_archinfo (core->anal, R_ANAL_ARCHINFO_MIN_OP_SIZE);
+	int maxop = r_anal_archinfo (core->anal, R_ANAL_ARCHINFO_MAX_OP_SIZE);
+
+	if (minop == maxop) {
+		if (minop == -1) {
+			return addr - 4;
+		}
+		return addr - minop;
+	}
 
 	// let's see if we can use anal info to get the previous instruction
 	// TODO: look in the current basicblock, then in the current function
 	// and search in all functions only as a last chance, to try to speed
 	// up the process.
-	bb = r_anal_bb_from_offset (core->anal, addr - 1);
+	bb = r_anal_bb_from_offset (core->anal, addr - minop);
 	if (bb) {
-		ut64 res = r_anal_bb_opaddr_at (bb, addr - 1);
+		ut64 res = r_anal_bb_opaddr_at (bb, addr - minop);
 		if (res != UT64_MAX) {
 			return res;
 		}
 	}
-
 	// if we anal info didn't help then fallback to the dumb solution.
 	target = addr;
 	base = target - OPDELTA;
@@ -650,14 +658,18 @@ R_API int r_core_visual_xrefs_x (RCore *core) {
 	int skip = 0;
 	int idx = 0;
 	char cstr[32];
+	ut64 addr = core->offset;
+	if (core->print->cur_enabled) {
+		addr += core->print->cur;
+	}
 
 repeat:
-	if ((xrefs = r_anal_xref_get (core->anal, core->offset))) {
+	if ((xrefs = r_anal_xref_get (core->anal, addr))) {
 		r_cons_clear00 ();
 		r_cons_gotoxy (1, 1);
-		r_cons_printf ("[GOTO XREF]> 0x%08"PFMT64x"\n", core->offset);
+		r_cons_printf ("[GOTO XREF]> 0x%08"PFMT64x"\n", addr);
 		if (r_list_empty (xrefs)) {
-			r_cons_printf ("\tNo XREF found at 0x%"PFMT64x"\n", core->offset);
+			r_cons_printf ("\tNo XREF found at 0x%"PFMT64x"\n", addr);
 			r_cons_any_key (NULL);
 			r_cons_clear00 ();
 		} else {
@@ -735,14 +747,18 @@ R_API int r_core_visual_xrefs_X (RCore *core) {
 	RAnalRef *refi;
 	RListIter *iter;
 	RAnalFunction *fun;
+	ut64 addr = core->offset;
+	if (core->print->cur_enabled) {
+		addr += core->print->cur;
+	}
 
-	fun = r_anal_get_fcn_in (core->anal, core->offset, R_ANAL_FCN_TYPE_NULL);
+	fun = r_anal_get_fcn_in (core->anal, addr, R_ANAL_FCN_TYPE_NULL);
 	if (fun) {
 		r_cons_clear00 ();
 		r_cons_gotoxy (1, 1);
 		r_cons_printf ("[GOTO REF]> \n");
 		if (r_list_empty (fun->refs)) {
-			r_cons_printf ("\tNo REF found at 0x%"PFMT64x"\n", core->offset);
+			r_cons_printf ("\tNo REF found at 0x%"PFMT64x"\n", addr);
 			r_cons_any_key (NULL);
 			r_cons_clear00 ();
 		} else {
@@ -1728,16 +1744,33 @@ R_API int r_core_visual_cmd(RCore *core, int ch) {
 			} else {
 				switch (buf[i]) {
 				case '-':
-					memcpy (buf, "\"CC-", 4);
+					memcpy (buf, "\"CC-\x00", 5);
 					break;
 				case '!':
-					memcpy (buf, "\"CC!", 4);
+					memcpy (buf, "\"CC!\x00", 5);
 					break;
 				default:
 					memcpy (buf, "\"CC ", 4);
 					break;
 				}
 				strcat (buf, "\"");
+			}
+			if (buf[3] == ' ') {
+				// have to escape any quotes.
+				int j, len = strlen (buf);
+				char* duped = strdup (buf);
+				i = 4, j=4;
+				for (i=4, j=4; i < len; ++i,++j) {
+					char c = duped[i];
+					if (c == '"' && i != (len - 1)) {
+						buf[j] = '\\';
+						++j;
+						buf[j] = '"';
+					} else {
+						buf[j] = c;
+					}
+				}
+				free (duped);
 			}
 			r_core_cmd (core, buf, 1);
 			if (core->print->cur_enabled) r_core_seek (core, orig, 1);

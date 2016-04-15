@@ -277,8 +277,13 @@ static int is_data_section(RBinFile *a, RBinSection *s) {
 			return true;
 #define X 1
 #define ROW (4 | 2)
+		/* probably too much false positives in here, or thats fine? */
 		if (strstr (o->info->bclass, "PE") && s->srwx & ROW && !(s->srwx & X) && s->size > 0) {
-			if (!strcmp (s->name, ".rdata")) // Maybe other sections are interesting too?
+			if (!strcmp (s->name, ".rsrc"))
+				return true;
+			if (!strcmp (s->name, ".data"))
+				return true;
+			if (!strcmp (s->name, ".rdata"))
 				return true;
 		}
 	}
@@ -297,7 +302,7 @@ static RList *get_strings(RBinFile *a, int min, int dump) {
 		/* dump to stdout, not stored in list */
 		ret = NULL;
 	} else {
-		ret = r_list_newf (free);
+		ret = r_list_newf (r_bin_string_free);
 		if (!ret) return NULL;
 	}
 
@@ -354,6 +359,7 @@ static void r_bin_object_delete_items(RBinObject *o) {
 	r_list_free (o->symbols);
 	r_list_free (o->classes);
 	r_list_free (o->lines);
+	sdb_free (o->kv);
 	if (o->mem) o->mem->free = mem_free;
 	r_list_free (o->mem);
 	o->entries = NULL;
@@ -367,6 +373,7 @@ static void r_bin_object_delete_items(RBinObject *o) {
 	o->classes = NULL;
 	o->lines = NULL;
 	o->info = NULL;
+	o->kv = NULL;
 	for (i = 0; i < R_BIN_SYM_LAST; i++) {
 		free (o->binsym[i]);
 		o->binsym[i] = NULL;
@@ -375,6 +382,7 @@ static void r_bin_object_delete_items(RBinObject *o) {
 
 R_API void r_bin_info_free(RBinInfo *rb) {
 	if (!rb) return;
+	free (rb->intrp);
 	free (rb->file);
 	free (rb->type);
 	free (rb->bclass);
@@ -392,10 +400,12 @@ R_API void r_bin_info_free(RBinInfo *rb) {
 
 R_API void r_bin_import_free(void *_imp) {
 	RBinImport *imp = (RBinImport *)_imp;
-	free (imp->name);
-	free (imp->classname);
-	free (imp->descriptor);
-	free (imp);
+	if (imp) {
+		R_FREE (imp->name);
+		R_FREE (imp->classname);
+		R_FREE (imp->descriptor);
+		free (imp);
+	}
 }
 
 R_API void r_bin_symbol_free(void *_sym) {
@@ -422,7 +432,6 @@ static void r_bin_object_free(void /*RBinObject*/ *o_) {
 	if (!o) return;
 	r_bin_info_free (o->info);
 	r_bin_object_delete_items (o);
-	free (o);
 }
 
 // XXX - change this to RBinObject instead of RBinFile
@@ -477,6 +486,7 @@ static int r_bin_object_set_items(RBinFile *binfile, RBinObject *o) {
 		}
 	}
 	if (cp->imports) {
+		r_list_free (o->imports);
 		o->imports = cp->imports (binfile);
 		if (o->imports) {
 			o->imports->free = r_bin_import_free;
@@ -493,15 +503,16 @@ static int r_bin_object_set_items(RBinFile *binfile, RBinObject *o) {
 	}
 	o->info = cp->info? cp->info (binfile): NULL;
 	if (cp->libs) o->libs = cp->libs (binfile);
-	if (cp->relocs) {
-		o->relocs = cp->relocs (binfile);
-		REBASE_PADDR (o, o->relocs, RBinReloc);
-	}
 	if (cp->sections) {
-		o->sections = cp->sections (binfile);
+		// XXX sections are populated by call to size
+		if (!o->sections) o->sections = cp->sections (binfile);
 		REBASE_PADDR (o, o->sections, RBinSection);
 		if (bin->filter)
 			r_bin_filter_sections (o->sections);
+	}
+	if (cp->relocs) {
+		o->relocs = cp->relocs (binfile);
+		REBASE_PADDR (o, o->relocs, RBinReloc);
 	}
 	if (cp->strings) {
 		o->strings = cp->strings (binfile);
@@ -650,7 +661,6 @@ R_API int r_bin_load_io_at_offset_as_sz(RBin *bin, RIODesc *desc, ut64 baseaddr,
 	if (!io || !desc) return false;
 	if (loadaddr == UT64_MAX) loadaddr = 0;
 
-	buf_bytes = NULL;
 	file_sz = iob->desc_size (io, desc);
 #if __APPLE__
 	/* Fix OSX/iOS debugger -- needs review for proper fix */
@@ -731,8 +741,9 @@ R_API int r_bin_load_io_at_offset_as_sz(RBin *bin, RIODesc *desc, ut64 baseaddr,
 	if (!binfile) {
 		binfile = r_bin_file_new_from_bytes (bin, desc->name, buf_bytes, sz,
 			file_sz, bin->rawstr, baseaddr, loadaddr, desc->fd, name, NULL, offset);
+	} else {
+		free (buf_bytes); // possible UAF
 	}
-
 	return binfile? r_bin_file_set_cur_binfile (bin, binfile): false;
 }
 
@@ -814,7 +825,9 @@ static void r_bin_file_free(void /*RBinFile*/ *bf_) {
 	}
 	free (a->file);
 	r_list_free (a->objs);
+	r_bin_object_free (a->o);
 	memset (a, 0, sizeof (RBinFile));
+	free (a);
 }
 
 static int r_bin_file_object_add(RBinFile *binfile, RBinObject *o) {
@@ -846,7 +859,10 @@ static RBinFile *r_bin_file_xtr_load_bytes(RBin *bin, RBinXtrPlugin *xtr, const 
 	if (!bf) {
 		if (!bin) return NULL;
 		bf = r_bin_file_create_append (bin, filename, bytes, sz, file_sz, rawstr, fd, xtr->name);
-		if (!bf) return bf;
+		if (!bf) 
+			return bf;
+		if (!bin->cur) 
+			bin->cur = bf;
 	}
 	if (idx == 0 && xtr && bytes) {
 		RList *xtr_data_list = xtr->extractall_from_bytes (bin, bytes, sz);
@@ -1123,6 +1139,12 @@ static RBinFile *r_bin_file_new_from_bytes(RBin *bin, const char *file, const ut
 	return bf;
 }
 
+static void plugin_free(RBinPlugin *p) {
+	if (p && p->fini) {
+		p->fini (NULL);
+	}
+}
+
 // rename to r_bin_plugin_add like the rest
 R_API int r_bin_add(RBin *bin, RBinPlugin *foo) {
 	RListIter *it;
@@ -1268,6 +1290,27 @@ R_API RList *r_bin_get_libs(RBin *bin) {
 	return o? o->libs: NULL;
 }
 
+
+R_API RList * r_bin_patch_relocs(RBin *bin) {
+	static bool first = true;
+	RBinObject *o = r_bin_cur_object (bin);
+	if (!o) return NULL;
+
+	//r_bin_object_set_items set o->relocs but there we don't have access to io
+	//so we need to be run from bin_relocs, free the previous reloc and get the patched ones
+	if (first && o->plugin && o->plugin->patch_relocs) {
+		RList *tmp = o->plugin->patch_relocs (bin);
+		first = false;
+		if (!tmp) return o->relocs;
+		r_list_free (o->relocs);
+		o->relocs = tmp;
+		REBASE_PADDR (o, o->relocs, RBinReloc);
+		first = false;
+		return o->relocs;
+	}
+	return o->relocs;
+}
+
 R_API RList *r_bin_get_relocs(RBin *bin) {
 	RBinObject *o = r_bin_cur_object (bin);
 	return o? o->relocs: NULL;
@@ -1387,8 +1430,7 @@ R_API RBin *r_bin_new() {
 	bin->force = NULL;
 	bin->sdb = sdb_new0 ();
 	bin->cb_printf = (PrintfCallback)printf;
-	bin->plugins = r_list_new ();
-	bin->plugins->free = free;
+	bin->plugins = r_list_newf ((RListFree)plugin_free);
 	bin->minstrlen = 0;
 	bin->cur = NULL;
 
@@ -1904,6 +1946,10 @@ R_API int r_bin_file_set_cur_binfile_obj(RBin *bin, RBinFile *bf, RBinObject *ob
 	bin->file = bf->file;
 	bin->cur = bf;
 	bin->narch = bf->narch;
+	#if 0
+	if (bf->o != obj)
+		r_bin_object_free (bf->o);
+	#endif
 	bf->o = obj;
 	plugin = r_bin_file_cur_plugin (bf);
 	if (bin->minstrlen < 1)

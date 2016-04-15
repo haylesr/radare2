@@ -10,11 +10,19 @@ enum {
 	SNES_OP_IMM // 8- or 16-bit immediate depending on X or M flag
 };
 
+
 typedef struct {
 	const char *name;
 	ut8 len;
 } snes_op_t;
 
+static int snes_op_get_size(int bits, snes_op_t* op) {
+	if (op->len == SNES_OP_IMM) {
+		return bits == 8 ? SNES_OP_16BIT : SNES_OP_24BIT;
+	} else {
+		return op->len;
+	}
+}
 
 static snes_op_t snes_op[]={
 {"brk 0x%02x",		SNES_OP_16BIT},
@@ -33,7 +41,7 @@ static snes_op_t snes_op[]={
 {"ora 0x%04x",		SNES_OP_24BIT},
 {"asl 0x%04x",		SNES_OP_24BIT},
 {"ora 0x%06x",		SNES_OP_32BIT},
-{"bpl 0x%02x",		SNES_OP_16BIT},
+{"bpl 0x%06x",		SNES_OP_16BIT},
 {"ora (0x%02x),y",	SNES_OP_16BIT},
 {"ora (0x%02x)",	SNES_OP_16BIT},
 {"ora (0x%02x,s),y",	SNES_OP_16BIT},
@@ -65,7 +73,7 @@ static snes_op_t snes_op[]={
 {"and 0x%04x",		SNES_OP_24BIT},
 {"rol 0x%04x",		SNES_OP_24BIT},
 {"and 0x%06x",		SNES_OP_32BIT},
-{"bmi 0x%02x",		SNES_OP_16BIT},
+{"bmi 0x%06x",		SNES_OP_16BIT},
 {"and (0x%02x),y",	SNES_OP_16BIT},
 {"and (0x%02x)",	SNES_OP_16BIT},
 {"and (0x%02x,s),y",	SNES_OP_16BIT},
@@ -97,7 +105,7 @@ static snes_op_t snes_op[]={
 {"eor 0x%04x",		SNES_OP_24BIT},
 {"lsr 0x%04x",		SNES_OP_24BIT},
 {"eor 0x%06x",		SNES_OP_32BIT},
-{"bvc 0x%02x",		SNES_OP_16BIT},
+{"bvc 0x%06x",		SNES_OP_16BIT},
 {"eor (0x%02x),y",	SNES_OP_16BIT},
 {"eor (0x%02x)",	SNES_OP_16BIT},
 {"eor (0x%02x,s),y",	SNES_OP_16BIT},
@@ -129,7 +137,7 @@ static snes_op_t snes_op[]={
 {"adc 0x%04x",		SNES_OP_24BIT},
 {"ror 0x%04x",		SNES_OP_24BIT},
 {"adc 0x%06x",		SNES_OP_32BIT},
-{"bvs 0x%02x",		SNES_OP_16BIT},
+{"bvs 0x%06x",		SNES_OP_16BIT},
 {"adc (0x%02x),y",	SNES_OP_16BIT},
 {"adc (0x%02x)",	SNES_OP_16BIT},
 {"adc (0x%02x,s),y",	SNES_OP_16BIT},
@@ -145,9 +153,9 @@ static snes_op_t snes_op[]={
 {"adc 0x%04x,x",	SNES_OP_24BIT},
 {"ror 0x%04x,x",	SNES_OP_24BIT},
 {"adc 0x%06x,x",	SNES_OP_32BIT},
-{"bra 0x%02x",		SNES_OP_16BIT},
+{"bra 0x%06x",		SNES_OP_16BIT},
 {"sta (0x%02x,x)",	SNES_OP_16BIT},
-{"brl 0x%04x",		SNES_OP_24BIT},
+{"brl 0x%06x",		SNES_OP_24BIT},
 {"sta 0x%02x,s",	SNES_OP_16BIT},
 {"sty 0x%02x",		SNES_OP_16BIT},
 {"sta 0x%02x",		SNES_OP_16BIT},
@@ -161,7 +169,7 @@ static snes_op_t snes_op[]={
 {"sta 0x%04x",		SNES_OP_24BIT},
 {"stx 0x%04x",		SNES_OP_24BIT},
 {"sta 0x%06x",		SNES_OP_32BIT},
-{"bcc 0x%02x",		SNES_OP_16BIT},
+{"bcc 0x%06x",		SNES_OP_16BIT},
 {"sta (0x%02x),y",	SNES_OP_16BIT},
 {"sta (0x%02x)",	SNES_OP_16BIT},
 {"sta (0x%02x,s),y",	SNES_OP_16BIT},
@@ -193,7 +201,7 @@ static snes_op_t snes_op[]={
 {"lda 0x%04x",		SNES_OP_24BIT},
 {"ldx 0x%04x",		SNES_OP_24BIT},
 {"lda 0x%06x",		SNES_OP_32BIT},
-{"bcs 0x%02x",		SNES_OP_16BIT},
+{"bcs 0x%06x",		SNES_OP_16BIT},
 {"lda (0x%02x),y",	SNES_OP_16BIT},
 {"lda (0x%02x)",	SNES_OP_16BIT},
 {"lda (0x%02x,s),y",	SNES_OP_16BIT},
@@ -225,7 +233,7 @@ static snes_op_t snes_op[]={
 {"cmp 0x%04x",		SNES_OP_24BIT},
 {"dec 0x%04x",		SNES_OP_24BIT},
 {"cmp 0x%06x",		SNES_OP_32BIT},
-{"bne 0x%02x",		SNES_OP_16BIT},
+{"bne 0x%06x",		SNES_OP_16BIT},
 {"cmp (0x%02x),y",	SNES_OP_16BIT},
 {"cmp (0x%02x)",	SNES_OP_16BIT},
 {"cmp (0x%02x,s),y",	SNES_OP_16BIT},
@@ -257,7 +265,7 @@ static snes_op_t snes_op[]={
 {"sbc 0x%04x",		SNES_OP_24BIT},
 {"inc 0x%04x",		SNES_OP_24BIT},
 {"sbc 0x%06x",		SNES_OP_32BIT},
-{"beq 0x%02x",		SNES_OP_16BIT},
+{"beq 0x%06x",		SNES_OP_16BIT},
 {"sbc (0x%02x),y",	SNES_OP_16BIT},
 {"sbc (0x%02x)",	SNES_OP_16BIT},
 {"sbc (0x%02x,s),y",	SNES_OP_16BIT},

@@ -1372,14 +1372,18 @@ R_API void r_print_init_rowoffsets (RPrint *p) {
 
 // set the offset, from the start of the printing, of the i-th row
 R_API void r_print_set_rowoff (RPrint *p, int i, ut32 offset) {
-	if (!p->row_offsets) {
-		p->row_offsets_sz = DFLT_ROWS;
+	if (i < 0) return;
+	if (!p->row_offsets || !p->row_offsets_sz) {
+		p->row_offsets_sz = R_MAX(i + 1, DFLT_ROWS);
 		p->row_offsets = R_NEWS (ut32, p->row_offsets_sz);
 	}
 	if (i >= p->row_offsets_sz) {
 		size_t new_size;
 		p->row_offsets_sz *= 2;
-		new_size = sizeof (*p->row_offsets) * p->row_offsets_sz;
+		//XXX dangerous
+		while (i >= p->row_offsets_sz)
+			p->row_offsets_sz *= 2;
+		new_size = sizeof (ut32) * p->row_offsets_sz;
 		p->row_offsets = realloc (p->row_offsets, new_size);
 	}
 	p->row_offsets[i] = offset;

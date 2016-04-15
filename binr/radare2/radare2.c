@@ -223,6 +223,38 @@ static int rabin_delegate(RThread *th) {
 }
 #endif
 
+static void radare2_rc(RCore *r) {
+	char *homerc = r_str_home (".radare2rc");
+	if (homerc) {
+		r_core_cmd_file (r, homerc);
+		free (homerc);
+	}
+	homerc = r_str_home ("/.config/radare2/radare2rc");
+	if (homerc) {
+		r_core_cmd_file (r, homerc);
+		free (homerc);
+	}
+	homerc = r_str_home ("/.config/radare2/radare2rc.d");
+	if (homerc) {
+		if (r_file_is_directory (homerc)) {
+			char *file;
+			RListIter *iter;
+			RList *files = r_sys_dir (homerc);
+			r_list_foreach (files, iter, file) {
+				if (*file != '.') {
+					char *path = r_str_newf ("%s/%s", homerc, file);
+					if (r_file_is_regular (path)) {
+						r_core_cmd_file (r, path);
+					}
+					free (path);
+				}
+			}
+			r_list_free (files);
+		}
+		free (homerc);
+	}
+}
+
 int main(int argc, char **argv, char **envp) {
 #if USE_THREADS
 	RThreadLock *lock = NULL;
@@ -327,6 +359,7 @@ int main(int argc, char **argv, char **envp) {
 		case 'a': asmarch = optarg; break;
 		case 'z': zflag++; break;
 		case 'A':
+			if (!do_analysis) do_analysis ++;
 			do_analysis++;
 			break;
 		case 'b': asmbits = optarg; break;
@@ -410,6 +443,17 @@ int main(int argc, char **argv, char **envp) {
 		r_list_free (cmds);
 		return main_help (help > 1? 2: 0);
 	}
+	if (debug == 1) {
+		char *uri = strdup (argv[optind]);
+		char *p = strstr (uri, "://");
+		if (p) {
+			*p = 0;
+			debugbackend = uri;
+			debug = 2;
+		} else {
+			free (uri);
+		}
+	}
 
 	if ((tmp = r_sys_getenv ("R2_NOPLUGINS"))) {
 		r_config_set_i (r.config, "cfg.plugins", 0);
@@ -456,40 +500,8 @@ int main(int argc, char **argv, char **envp) {
 		break;
 	}
 
-	// -- means opening r2 without any file
 	if (run_rc) {
-		char *homerc = r_str_home (".radare2rc");
-		if (homerc) {
-			r_core_cmd_file (&r, homerc);
-			free (homerc);
-		}
-		homerc = r_str_home ("/.config/radare2/radare2rc");
-		if (homerc) {
-			r_core_cmd_file (&r, homerc);
-			free (homerc);
-		}
-		if (r_config_get_i (r.config, "file.analyze")) {
-			r_core_cmd0 (&r, "aa");
-		}
-		homerc = r_str_home ("/.config/radare2/radare2rc.d");
-		if (homerc) {
-			if (r_file_is_directory (homerc)) {
-				char *file;
-				RListIter *iter;
-				RList *files = r_sys_dir (homerc);
-				r_list_foreach (files, iter, file) {
-					if (*file != '.') {
-						char *path = r_str_newf ("%s/%s", homerc, file);
-						if (r_file_is_regular (path)) {
-							r_core_cmd_file (&r, path);
-						}
-						free (path);
-					}
-				}
-				r_list_free (files);
-			}
-			free (homerc);
-		}
+		radare2_rc (&r);
 	}
 	if (argv[optind] && r_file_is_directory (argv[optind])) {
 		if (debug) {
@@ -784,11 +796,21 @@ int main(int argc, char **argv, char **envp) {
 		if (r_file_exists (global_rc))
 			(void)r_core_run_script (&r, global_rc);
 	}
+	// only analyze if file contains entrypoint
+	{
+		char *s = r_core_cmd_str (&r, "ieq");
+		if (s && *s) {
+			int da = r_config_get_i (r.config, "file.analyze");
+			if (da > do_analysis)
+				do_analysis = da;
+		}
+		free (s);
+	}
 	if (do_analysis > 0) {
-		if (do_analysis > 1) {
-			r_core_cmd0 (&r, "aaaa");
-		} else {
-			r_core_cmd0 (&r, "aaa");
+		switch (do_analysis) {
+		case 1: r_core_cmd0 (&r, "aa"); break;
+		case 2: r_core_cmd0 (&r, "aaa"); break;
+		case 3: r_core_cmd0 (&r, "aaaa"); break;
 		}
 		r_cons_flush ();
 	}

@@ -187,7 +187,7 @@ static int r_debug_native_continue_syscall (RDebug *dbg, int pid, int num) {
 #if __linux__
 	return ptrace (PTRACE_SYSCALL, pid, 0, 0);
 #elif __BSD__
-	ut64 pc = r_debug_reg_get (dbg, "pc");
+	ut64 pc = r_debug_reg_get (dbg, "PC");
 	return ptrace (PTRACE_SYSCALL, pid, (void*)(size_t)pc, 0);
 #else
 	eprintf ("TODO: continue syscall not implemented yet\n");
@@ -213,7 +213,7 @@ static int r_debug_native_continue (RDebug *dbg, int pid, int tid, int sig) {
 	return tid;
 #elif __BSD__
 	void *data = (void*)(size_t)((sig != -1) ? sig : dbg->reason.signum);
-	ut64 pc = r_debug_reg_get (dbg, "pc");
+	ut64 pc = r_debug_reg_get (dbg, "PC");
 	return ptrace (PTRACE_CONT, pid, (void*)(size_t)pc, (int)(size_t)data) == 0;
 #elif __CYGWIN__
 	#warning "r_debug_native_continue not supported on this platform"
@@ -771,7 +771,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 		return NULL;
 	}
 
-	list = r_list_new();
+	list = r_list_new ();
 	if (!list) {
 		fclose (fd);
 		return NULL;
@@ -779,7 +779,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 	list->free = (RListFree)_map_free;
 	while (!feof (fd)) {
 		line[0] = '\0';
-		fgets (line, sizeof(line) - 1, fd);
+		fgets (line, sizeof (line) - 1, fd);
 		if (line[0] == '\0') break;
 		path[0] = '\0';
 		line[strlen (line) - 1] = '\0';
@@ -789,7 +789,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 			&region[2], &region2[2], &ign, &ign,
 			unkstr, perms, &ign, &ign);
 		pos_c = strchr (line, '/');
-		if (pos_c) strncpy (path, pos_c, sizeof(path) - 1);
+		if (pos_c) strncpy (path, pos_c, sizeof (path) - 1);
 		else path[0] = '\0';
 #else
 		char null[64]; // XXX: this can overflow
@@ -801,12 +801,12 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 
 		pos_c[-1] = (char)'0'; // xxx. this is wrong
 		pos_c[ 0] = (char)'x';
-		strncpy (region2, pos_c - 1, sizeof(region2) - 1);
+		strncpy (region2, pos_c - 1, sizeof (region2) - 1);
 #endif // __KFBSD__
 		region[0] = region2[0] = '0';
 		region[1] = region2[1] = 'x';
 
-		if (!*path) snprintf (path, sizeof(path), "unk%d", unk++);
+		if (!*path) snprintf (path, sizeof (path), "unk%d", unk++);
 		perm = 0;
 		for (i = 0; perms[i] && i < 4; i++)
 			switch (perms[i]) {
@@ -815,10 +815,8 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 			case 'x': perm |= R_IO_EXEC; break;
 			}
 
-		map = r_debug_map_new (path,
-					r_num_get (NULL, region),
-					r_num_get (NULL, region2),
-					perm, 0);
+		map = r_debug_map_new (path, r_num_get (NULL, region),
+				r_num_get (NULL, region2), perm, 0);
 		if (!map) break;
 		map->file = strdup (path);
 		r_list_append (list, map);
@@ -1259,6 +1257,28 @@ static int r_debug_desc_native_open (const char *path) {
 	return 0;
 }
 
+#if 0
+static int r_debug_setup_ownership (int fd, RDebug *dbg) {
+	RDebugInfo *info = r_debug_info (dbg, NULL);
+
+	if (!info) {
+		eprintf ("Error while getting debug info.\n");
+		return -1;
+	}
+	fchown (fd, info->uid, info->gid);
+	r_debug_info_free (info);
+  	return 0;
+}
+#endif
+
+static bool r_debug_gcore (RDebug *dbg, RBuffer *dest) {
+#if __APPLE__
+	return xnu_generate_corefile (dbg, dest);
+#else
+	return false;
+#endif
+}
+
 struct r_debug_desc_plugin_t r_debug_desc_plugin_native = {
 	.open = r_debug_desc_native_open,
 	.list = r_debug_desc_native_list,
@@ -1275,9 +1295,6 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "x86",
 	.canstep = 1,
-#elif __arm__
-	.bits = R_SYS_BITS_16 | R_SYS_BITS_32 | R_SYS_BITS_64,
-	.arch = "arm",
 #if __linux__
 	.canstep = 0, // XXX it's 1 on some platforms...
 #else
@@ -1287,6 +1304,9 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.bits = R_SYS_BITS_16 | R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "arm",
 	.canstep = 0, // XXX it's 1 on some platforms...
+#elif __arm__
+	.bits = R_SYS_BITS_16 | R_SYS_BITS_32 | R_SYS_BITS_64,
+	.arch = "arm",
 #elif __mips__
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "mips",
@@ -1315,7 +1335,7 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.frames = &r_debug_native_frames, // rename to backtrace ?
 	.reg_profile = (void *)r_debug_native_reg_profile,
 	.reg_read = r_debug_native_reg_read,
-        .info = r_debug_native_info,
+	.info = r_debug_native_info,
 	.reg_write = (void *)&r_debug_native_reg_write,
 	.map_alloc = r_debug_native_map_alloc,
 	.map_dealloc = r_debug_native_map_dealloc,
@@ -1324,6 +1344,7 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.map_protect = r_debug_native_map_protect,
 	.breakpoint = r_debug_native_bp,
 	.drx = r_debug_native_drx,
+	.gcore = r_debug_gcore,
 };
 
 #ifndef CORELIB
